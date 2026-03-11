@@ -13,7 +13,7 @@ use helix_core::snippets::{ActiveSnippet, SnippetRenderCtx};
 use helix_core::syntax::config::LanguageServerFeature;
 use helix_core::text_annotations::{InlineAnnotation, Overlay};
 use helix_event::TaskController;
-use helix_lsp::util::lsp_pos_to_pos;
+use helix_lsp::{lsp::FileProgressProcessingInfo, util::lsp_pos_to_pos};
 use helix_stdx::faccess::{copy_metadata, readonly};
 use helix_vcs::{DiffHandle, DiffProviderRegistry};
 use once_cell::sync::OnceCell;
@@ -194,6 +194,8 @@ pub struct Document {
     pub(crate) modified_since_accessed: bool,
 
     pub(crate) diagnostics: Vec<Diagnostic>,
+    pub(crate) progress: Vec<FileProgressProcessingInfo>,
+    pub(crate) progress_received: bool,
     pub(crate) language_servers: HashMap<LanguageServerName, Arc<Client>>,
 
     diff_handle: Option<DiffHandle>,
@@ -202,6 +204,8 @@ pub struct Document {
     // when document was used for most-recent-used buffer picker
     pub focused_at: std::time::Instant,
 
+    // A name separate from the file name
+    pub name: Option<String>,
     pub readonly: bool,
 
     pub previous_diagnostic_id: Option<String>,
@@ -211,6 +215,9 @@ pub struct Document {
     // NOTE: ideally this would live on the handler for color swatches. This is blocked on a
     // large refactor that would make `&mut Editor` available on the `DocumentDidChange` event.
     pub color_swatch_controller: TaskController,
+
+    pub uri: Option<Box<Url>>,
+
     pub pull_diagnostic_controller: TaskController,
 
     // NOTE: this field should eventually go away - we should use the Editor's syn_loader instead
@@ -316,6 +323,8 @@ impl fmt::Debug for Document {
             .field("version", &self.version)
             .field("modified_since_accessed", &self.modified_since_accessed)
             .field("diagnostics", &self.diagnostics)
+            .field("progress", &self.progress)
+            .field("progress_received", &self.progress_received)
             // .field("language_server", &self.language_server)
             .finish()
     }
@@ -715,6 +724,8 @@ impl Document {
             changes,
             old_state,
             diagnostics: Vec::new(),
+            progress: Vec::new(),
+            progress_received: false,
             version: 0,
             history: Cell::new(History::default()),
             savepoints: Vec::new(),
@@ -726,10 +737,12 @@ impl Document {
             config,
             version_control_head: None,
             focused_at: std::time::Instant::now(),
+            name: None,
             readonly: false,
             jump_labels: HashMap::new(),
             color_swatches: None,
             color_swatch_controller: TaskController::new(),
+            uri: None,
             syn_loader,
             previous_diagnostic_id: None,
             pull_diagnostic_controller: TaskController::new(),
@@ -1190,6 +1203,10 @@ impl Document {
                 self.editor_config = EditorConfig::find(path);
             }
         }
+    }
+
+    pub fn last_saved_time(&self) -> SystemTime {
+        self.last_saved_time
     }
 
     pub fn pickup_last_saved_time(&mut self) {
@@ -1833,6 +1850,20 @@ impl Document {
             .unwrap_or_else(|| self.config.load().path_completion)
     }
 
+    #[cfg(feature = "steel")]
+    pub fn arc_language_servers(&self) -> impl Iterator<Item = Arc<helix_lsp::Client>> + use<'_> {
+        self.language_config().into_iter().flat_map(move |config| {
+            config.language_servers.iter().filter_map(move |features| {
+                let ls = self.language_servers.get(&features.name)?.clone();
+                if ls.is_initialized() {
+                    Some(ls)
+                } else {
+                    None
+                }
+            })
+        })
+    }
+
     /// maintains the order as configured in the language_servers TOML array
     pub fn language_servers(&self) -> impl Iterator<Item = &helix_lsp::Client> {
         self.language_config().into_iter().flat_map(move |config| {
@@ -1951,7 +1982,10 @@ impl Document {
 
     /// File path as a URL.
     pub fn url(&self) -> Option<Url> {
-        Url::from_file_path(self.path()?).ok()
+        self.uri
+            .as_ref()
+            .map(|x| *x.clone())
+            .or_else(|| Url::from_file_path(self.path()?).ok())
     }
 
     pub fn uri(&self) -> Option<helix_core::Uri> {
@@ -2007,7 +2041,9 @@ impl Document {
 
     pub fn display_name(&self) -> Cow<'_, str> {
         self.relative_path()
-            .map_or_else(|| SCRATCH_BUFFER_NAME.into(), |path| path.to_string_lossy())
+            .map(|path| path.to_string_lossy().to_string().into())
+            .or_else(|| self.name.as_ref().map(|x| Cow::Owned(x.clone())))
+            .unwrap_or_else(|| SCRATCH_BUFFER_NAME.into())
     }
 
     // transact(Fn) ?

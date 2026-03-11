@@ -57,7 +57,7 @@ pub struct Client {
     _process: Child,
     server_tx: UnboundedSender<Payload>,
     request_counter: AtomicU64,
-    pub(crate) capabilities: OnceCell<lsp::ServerCapabilities>,
+    pub(crate) initialize_result: OnceCell<lsp::InitializeResult>,
     pub(crate) file_operation_interest: OnceLock<FileOperationsInterest>,
     config: Option<Value>,
     root_path: std::path::PathBuf,
@@ -108,7 +108,7 @@ impl Client {
             return false;
         }
 
-        let Some(capabilities) = self.capabilities.get() else {
+        let Some(lsp::InitializeResult { capabilities, .. }) = self.initialize_result.get() else {
             let client = Arc::clone(self);
             // initialization hasn't finished yet, deal with this new root later
             // TODO: In the edgecase that a **new root** is added
@@ -254,7 +254,7 @@ impl Client {
             _process: process,
             server_tx,
             request_counter: AtomicU64::new(0),
-            capabilities: OnceCell::new(),
+            initialize_result: OnceCell::new(),
             file_operation_interest: OnceLock::new(),
             config,
             req_timeout,
@@ -292,13 +292,22 @@ impl Client {
     }
 
     pub fn is_initialized(&self) -> bool {
-        self.capabilities.get().is_some()
+        self.initialize_result.get().is_some()
+    }
+
+    pub fn initialize_result(&self) -> &lsp::InitializeResult {
+        &self
+            .initialize_result
+            .get()
+            .expect("language server not yet initialized!")
     }
 
     pub fn capabilities(&self) -> &lsp::ServerCapabilities {
-        self.capabilities
+        &self
+            .initialize_result
             .get()
             .expect("language server not yet initialized!")
+            .capabilities
     }
 
     pub(crate) fn file_operations_intests(&self) -> &FileOperationsInterest {
@@ -968,7 +977,7 @@ impl Client {
         new_text: &Rope,
         changes: &ChangeSet,
     ) -> Option<()> {
-        let capabilities = self.capabilities.get().unwrap();
+        let capabilities = &self.initialize_result.get().unwrap().capabilities;
 
         // Return early if the server does not support document sync.
         let sync_capabilities = match capabilities.text_document_sync {
@@ -1019,7 +1028,7 @@ impl Client {
         text_document: lsp::TextDocumentIdentifier,
         text: &Rope,
     ) -> Option<()> {
-        let capabilities = self.capabilities.get().unwrap();
+        let capabilities = &self.initialize_result.get().unwrap().capabilities;
 
         let include_text = match &capabilities.text_document_sync.as_ref()? {
             lsp::TextDocumentSyncCapability::Options(lsp::TextDocumentSyncOptions {
@@ -1050,7 +1059,7 @@ impl Client {
         work_done_token: Option<lsp::ProgressToken>,
         context: lsp::CompletionContext,
     ) -> Option<impl Future<Output = Result<Option<lsp::CompletionResponse>>>> {
-        let capabilities = self.capabilities.get().unwrap();
+        let capabilities = &self.initialize_result.get().unwrap().capabilities;
 
         // Return early if the server does not support completion.
         capabilities.completion_provider.as_ref()?;
@@ -1082,7 +1091,7 @@ impl Client {
         &self,
         code_action: &lsp::CodeAction,
     ) -> Option<impl Future<Output = Result<lsp::CodeAction>>> {
-        let capabilities = self.capabilities.get().unwrap();
+        let capabilities = &self.initialize_result.get().unwrap().capabilities;
 
         // Return early if the server does not support resolving code actions.
         match capabilities.code_action_provider {
@@ -1102,7 +1111,7 @@ impl Client {
         position: lsp::Position,
         work_done_token: Option<lsp::ProgressToken>,
     ) -> Option<impl Future<Output = Result<Option<SignatureHelp>>>> {
-        let capabilities = self.capabilities.get().unwrap();
+        let capabilities = &self.initialize_result.get().unwrap().capabilities;
 
         // Return early if the server does not support signature help.
         capabilities.signature_help_provider.as_ref()?;
@@ -1126,7 +1135,7 @@ impl Client {
         range: lsp::Range,
         work_done_token: Option<lsp::ProgressToken>,
     ) -> Option<impl Future<Output = Result<Option<Vec<lsp::InlayHint>>>>> {
-        let capabilities = self.capabilities.get().unwrap();
+        let capabilities = &self.initialize_result.get().unwrap().capabilities;
 
         match capabilities.inlay_hint_provider {
             Some(
@@ -1150,7 +1159,12 @@ impl Client {
         text_document: lsp::TextDocumentIdentifier,
         work_done_token: Option<lsp::ProgressToken>,
     ) -> Option<impl Future<Output = Result<Vec<lsp::ColorInformation>>>> {
-        self.capabilities.get().unwrap().color_provider.as_ref()?;
+        self.initialize_result
+            .get()
+            .unwrap()
+            .capabilities
+            .color_provider
+            .as_ref()?;
         let params = lsp::DocumentColorParams {
             text_document,
             work_done_progress_params: lsp::WorkDoneProgressParams {
@@ -1170,7 +1184,7 @@ impl Client {
         position: lsp::Position,
         work_done_token: Option<lsp::ProgressToken>,
     ) -> Option<impl Future<Output = Result<Option<lsp::Hover>>>> {
-        let capabilities = self.capabilities.get().unwrap();
+        let capabilities = &self.initialize_result.get().unwrap().capabilities;
 
         // Return early if the server does not support hover.
         match capabilities.hover_provider {
@@ -1201,7 +1215,7 @@ impl Client {
         options: lsp::FormattingOptions,
         work_done_token: Option<lsp::ProgressToken>,
     ) -> Option<impl Future<Output = Result<Option<Vec<lsp::TextEdit>>>>> {
-        let capabilities = self.capabilities.get().unwrap();
+        let capabilities = &self.initialize_result.get().unwrap().capabilities;
 
         // Return early if the server does not support formatting.
         match capabilities.document_formatting_provider {
@@ -1227,7 +1241,7 @@ impl Client {
         options: lsp::FormattingOptions,
         work_done_token: Option<lsp::ProgressToken>,
     ) -> Option<impl Future<Output = Result<Option<Vec<lsp::TextEdit>>>>> {
-        let capabilities = self.capabilities.get().unwrap();
+        let capabilities = &self.initialize_result.get().unwrap().capabilities;
 
         // Return early if the server does not support range formatting.
         match capabilities.document_range_formatting_provider {
@@ -1279,7 +1293,7 @@ impl Client {
         position: lsp::Position,
         work_done_token: Option<lsp::ProgressToken>,
     ) -> Option<impl Future<Output = Result<Option<Vec<lsp::DocumentHighlight>>>>> {
-        let capabilities = self.capabilities.get().unwrap();
+        let capabilities = &self.initialize_result.get().unwrap().capabilities;
 
         // Return early if the server does not support document highlight.
         match capabilities.document_highlight_provider {
@@ -1332,7 +1346,7 @@ impl Client {
         position: lsp::Position,
         work_done_token: Option<lsp::ProgressToken>,
     ) -> Option<impl Future<Output = Result<Option<lsp::GotoDefinitionResponse>>>> {
-        let capabilities = self.capabilities.get().unwrap();
+        let capabilities = &self.initialize_result.get().unwrap().capabilities;
 
         // Return early if the server does not support goto-definition.
         match capabilities.definition_provider {
@@ -1353,7 +1367,7 @@ impl Client {
         position: lsp::Position,
         work_done_token: Option<lsp::ProgressToken>,
     ) -> Option<impl Future<Output = Result<Option<lsp::GotoDefinitionResponse>>>> {
-        let capabilities = self.capabilities.get().unwrap();
+        let capabilities = &self.initialize_result.get().unwrap().capabilities;
 
         // Return early if the server does not support goto-declaration.
         match capabilities.declaration_provider {
@@ -1378,7 +1392,7 @@ impl Client {
         position: lsp::Position,
         work_done_token: Option<lsp::ProgressToken>,
     ) -> Option<impl Future<Output = Result<Option<lsp::GotoDefinitionResponse>>>> {
-        let capabilities = self.capabilities.get().unwrap();
+        let capabilities = &self.initialize_result.get().unwrap().capabilities;
 
         // Return early if the server does not support goto-type-definition.
         match capabilities.type_definition_provider {
@@ -1402,7 +1416,7 @@ impl Client {
         position: lsp::Position,
         work_done_token: Option<lsp::ProgressToken>,
     ) -> Option<impl Future<Output = Result<Option<lsp::GotoDefinitionResponse>>>> {
-        let capabilities = self.capabilities.get().unwrap();
+        let capabilities = &self.initialize_result.get().unwrap().capabilities;
 
         // Return early if the server does not support goto-definition.
         match capabilities.implementation_provider {
@@ -1427,7 +1441,7 @@ impl Client {
         include_declaration: bool,
         work_done_token: Option<lsp::ProgressToken>,
     ) -> Option<impl Future<Output = Result<Option<Vec<lsp::Location>>>>> {
-        let capabilities = self.capabilities.get().unwrap();
+        let capabilities = &self.initialize_result.get().unwrap().capabilities;
 
         // Return early if the server does not support goto-reference.
         match capabilities.references_provider {
@@ -1456,7 +1470,7 @@ impl Client {
         &self,
         text_document: lsp::TextDocumentIdentifier,
     ) -> Option<impl Future<Output = Result<Option<lsp::DocumentSymbolResponse>>>> {
-        let capabilities = self.capabilities.get().unwrap();
+        let capabilities = &self.initialize_result.get().unwrap().capabilities;
 
         // Return early if the server does not support document symbols.
         match capabilities.document_symbol_provider {
@@ -1478,7 +1492,7 @@ impl Client {
         text_document: lsp::TextDocumentIdentifier,
         position: lsp::Position,
     ) -> Option<impl Future<Output = Result<Option<lsp::PrepareRenameResponse>>>> {
-        let capabilities = self.capabilities.get().unwrap();
+        let capabilities = &self.initialize_result.get().unwrap().capabilities;
 
         match capabilities.rename_provider {
             Some(lsp::OneOf::Right(lsp::RenameOptions {
@@ -1501,7 +1515,7 @@ impl Client {
         &self,
         query: String,
     ) -> Option<impl Future<Output = Result<Option<lsp::WorkspaceSymbolResponse>>>> {
-        let capabilities = self.capabilities.get().unwrap();
+        let capabilities = &self.initialize_result.get().unwrap().capabilities;
 
         // Return early if the server does not support workspace symbols.
         match capabilities.workspace_symbol_provider {
@@ -1524,7 +1538,7 @@ impl Client {
         range: lsp::Range,
         context: lsp::CodeActionContext,
     ) -> Option<impl Future<Output = Result<Option<Vec<lsp::CodeActionOrCommand>>>>> {
-        let capabilities = self.capabilities.get().unwrap();
+        let capabilities = &self.initialize_result.get().unwrap().capabilities;
 
         // Return early if the server does not support code actions.
         match capabilities.code_action_provider {
@@ -1574,7 +1588,7 @@ impl Client {
         &self,
         command: lsp::Command,
     ) -> Option<impl Future<Output = Result<Option<Value>>>> {
-        let capabilities = self.capabilities.get().unwrap();
+        let capabilities = &self.initialize_result.get().unwrap().capabilities;
 
         // Return early if the language server does not support executing commands.
         capabilities.execute_command_provider.as_ref()?;
@@ -1595,4 +1609,91 @@ impl Client {
             changes,
         })
     }
+
+    // Everything below is explicitly extensions used for handling non standard lsp commands
+    #[cfg(feature = "steel")]
+    pub fn non_standard_extension(
+        &self,
+        method_name: String,
+        params: Option<Value>,
+    ) -> Option<impl Future<Output = Result<Value>>> {
+        Some(self.call_non_standard(DynamicLspRequest {
+            method_name,
+            params,
+        }))
+    }
+
+    #[cfg(feature = "steel")]
+    fn call_non_standard(&self, request: DynamicLspRequest) -> impl Future<Output = Result<Value>> {
+        self.call_non_standard_with_timeout(request, self.req_timeout)
+    }
+
+    #[cfg(feature = "steel")]
+    fn call_non_standard_with_timeout(
+        &self,
+        request: DynamicLspRequest,
+        timeout_secs: u64,
+    ) -> impl Future<Output = Result<Value>> {
+        let server_tx = self.server_tx.clone();
+        let id = self.next_request_id();
+
+        let rx = serde_json::to_value(&request.params)
+            .map_err(Error::from)
+            .and_then(|params| {
+                let request = jsonrpc::MethodCall {
+                    jsonrpc: Some(jsonrpc::Version::V2),
+                    id: id.clone(),
+                    method: request.method_name,
+                    params: Self::value_into_params(params),
+                };
+
+                let (tx, rx) = channel::<Result<Value>>(1);
+
+                server_tx
+                    .send(Payload::Request {
+                        chan: tx,
+                        value: request,
+                    })
+                    .map_err(|e| Error::Other(e.into()))?;
+                Ok(rx)
+            });
+
+        async move {
+            use std::time::Duration;
+            use tokio::time::timeout;
+
+            // TODO: delay other calls until initialize success
+            timeout(Duration::from_secs(timeout_secs), rx?.recv())
+                .await
+                .map_err(|_| Error::Timeout(id))? // return Timeout
+                .ok_or(Error::StreamClosed)?
+        }
+    }
+
+    /// Send a custom RPC notification with arbitrary method and params to the language server.
+    #[cfg(feature = "steel")]
+    pub fn send_custom_notification(&self, method: String, params: Option<Value>) -> Result<()> {
+        let server_tx = self.server_tx.clone();
+
+        let params = params.unwrap_or(Value::Null);
+
+        let notification = jsonrpc::Notification {
+            jsonrpc: Some(jsonrpc::Version::V2),
+            method,
+            params: Self::value_into_params(params),
+        };
+
+        server_tx
+            .send(Payload::Notification(notification))
+            .map_err(|e| Error::Other(e.into()))?;
+
+        Ok(())
+    }
+}
+
+#[cfg(feature = "steel")]
+#[derive(serde::Serialize, Deserialize)]
+pub struct DynamicLspRequest {
+    method_name: String,
+    params: Option<Value>,
 }

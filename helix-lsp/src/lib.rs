@@ -476,6 +476,8 @@ pub enum MethodCall {
     RegisterCapability(lsp::RegistrationParams),
     UnregisterCapability(lsp::UnregistrationParams),
     ShowDocument(lsp::ShowDocumentParams),
+    // Other kind specifically for extensions
+    Other(String, jsonrpc::Params),
     WorkspaceDiagnosticRefresh,
     ShowMessageRequest(lsp::ShowMessageRequestParams),
 }
@@ -514,9 +516,7 @@ impl MethodCall {
                 let params: lsp::ShowMessageRequestParams = params.parse()?;
                 Self::ShowMessageRequest(params)
             }
-            _ => {
-                return Err(Error::Unhandled);
-            }
+            _ => Self::Other(method.to_owned(), params),
         };
         Ok(request)
     }
@@ -532,6 +532,9 @@ pub enum Notification {
     ShowMessage(lsp::ShowMessageParams),
     LogMessage(lsp::LogMessageParams),
     ProgressMessage(lsp::ProgressParams),
+    FileProgressMessage(lsp::FileProgressParams),
+    // Other kind specifically for extensions
+    Other(String, jsonrpc::Params),
 }
 
 impl Notification {
@@ -558,9 +561,11 @@ impl Notification {
                 let params: lsp::ProgressParams = params.parse()?;
                 Self::ProgressMessage(params)
             }
-            _ => {
-                return Err(Error::Unhandled);
+            lsp::notification::FileProgress::METHOD => {
+                let params: lsp::FileProgressParams = params.parse()?;
+                Self::FileProgressMessage(params)
             }
+            _ => Self::Other(method.to_owned(), params),
         };
 
         Ok(notification)
@@ -938,11 +943,11 @@ fn start_client(
     tokio::spawn(async move {
         use futures_util::TryFutureExt;
         let value = _client
-            .capabilities
+            .initialize_result
             .get_or_try_init(|| {
                 _client
                     .initialize(enable_snippets)
-                    .map_ok(|response| response.capabilities)
+                    .map_ok(|response| response)
             })
             .await;
 
